@@ -24,6 +24,13 @@ export default function Auth({ onAuthenticated }) {
           body: JSON.stringify({ name, email, password }),
         }
       );
+      const contentType = response.headers.get("content-type") || "";
+      if (!contentType.includes("json")) {
+        throw new Error(
+          "Authentication service is unavailable. Start the app with `npm run dev` from the Task project folder."
+        );
+      }
+
       const result = await response.json();
 
       if (!response.ok) {
