@@ -11,4 +11,13 @@ npm run dev
 
 Open the Vite URL printed in the terminal (usually `http://localhost:5173`). The development command starts both the web app and the API. User accounts are stored in `server/data/users.json`; task data stays in the browser and is separated by account.
 
-For deployment, set a strong `JWT_SECRET` environment variable. The API refuses to start in production without it. The built-in JSON user store is intended for local development and small single-instance deployments; use a managed database for a multi-instance production service.
+## Production
+
+Build and start the combined web app and API with:
+
+```sh
+npm run build
+npm start
+```
+
+Set a strong `JWT_SECRET` environment variable and provide persistent storage for `server/data/users.json`. The server listens on `PORT` (default `3001`) and `0.0.0.0`, serves the built React app, and exposes `/api/health` for health checks. The JSON user store supports a single server instance; use a managed database before running multiple instances.

@@ -1,6 +1,6 @@
 import bcrypt from "bcryptjs";
 import express from "express";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
@@ -9,8 +9,12 @@ import { randomUUID } from "node:crypto";
 
 const app = express();
 const port = Number(process.env.PORT) || 3001;
+const host = process.env.HOST || "0.0.0.0";
 const usersFile = process.env.AUTH_DATA_FILE || join(dirname(fileURLToPath(import.meta.url)), "data", "users.json");
 const jwtSecret = process.env.JWT_SECRET || "taskflow-local-development-secret-change-before-deploy";
+const projectDirectory = dirname(dirname(fileURLToPath(import.meta.url)));
+const buildDirectory = join(projectDirectory, "dist");
+const isProduction = process.env.NODE_ENV === "production";
 
 if (process.env.NODE_ENV === "production" && !process.env.JWT_SECRET) {
   throw new Error("JWT_SECRET must be set in production.");
@@ -18,7 +22,12 @@ if (process.env.NODE_ENV === "production" && !process.env.JWT_SECRET) {
 
 app.use(express.json({ limit: "10kb" }));
 
+if (isProduction) {
+  app.use(express.static(buildDirectory, { index: false }));
+}
+
 let users = [];
+let signupQueue = Promise.resolve();
 
 function publicUser(user) {
   return { id: user.id, name: user.name, email: user.email };
@@ -28,6 +37,38 @@ function createSession(user, response, status = 200) {
   const token = jwt.sign({ sub: user.id }, jwtSecret, { expiresIn: "7d" });
   response.status(status).json({ token, user: publicUser(user) });
 }
+
+function addUser(user) {
+  const operation = signupQueue.then(async () => {
+    if (users.some((existingUser) => existingUser.email === user.email)) {
+      return false;
+    }
+
+    const nextUsers = [...users, user];
+    const temporaryFile = `${usersFile}.${randomUUID()}.tmp`;
+
+    try {
+      await writeFile(temporaryFile, JSON.stringify(nextUsers, null, 2), {
+        encoding: "utf8",
+        flag: "wx",
+      });
+      await rename(temporaryFile, usersFile);
+    } catch (error) {
+      await rm(temporaryFile, { force: true }).catch(() => {});
+      throw error;
+    }
+
+    users = nextUsers;
+    return true;
+  });
+
+  signupQueue = operation.then(() => undefined, () => undefined);
+  return operation;
+}
+
+app.get("/api/health", (request, response) => {
+  response.json({ status: "ok" });
+});
 
 app.post("/api/auth/signup", async (request, response, next) => {
   try {
@@ -44,18 +85,17 @@ app.post("/api/auth/signup", async (request, response, next) => {
     if (password.length < 8 || password.length > 128) {
       return response.status(400).json({ message: "Password must be 8 to 128 characters." });
     }
-    if (users.some((user) => user.email === email)) {
-      return response.status(409).json({ message: "An account with this email already exists." });
-    }
-
     const user = {
       id: randomUUID(),
       name,
       email,
       passwordHash: await bcrypt.hash(password, 12),
     };
-    users.push(user);
-    await writeFile(usersFile, JSON.stringify(users, null, 2));
+
+    if (!(await addUser(user))) {
+      return response.status(409).json({ message: "An account with this email already exists." });
+    }
+
     return createSession(user, response, 201);
   } catch (error) {
     return next(error);
@@ -98,10 +138,32 @@ app.get("/api/auth/me", (request, response) => {
   }
 });
 
+app.use("/api", (request, response) => {
+  response.status(404).json({ message: "API endpoint not found." });
+});
+
+app.use((request, response, next) => {
+  if (isProduction && request.method === "GET") {
+    return response.sendFile(join(buildDirectory, "index.html"), (error) => {
+      if (error) next(error);
+    });
+  }
+
+  return next();
+});
+
 app.use((error, request, response, next) => {
   console.error(error);
   if (response.headersSent) return next(error);
-  return response.status(500).json({ message: "Something went wrong. Please try again." });
+  const status = Number.isInteger(error.status) && error.status >= 400 && error.status < 500
+    ? error.status
+    : 500;
+  const message = error.type === "entity.parse.failed"
+    ? "Request body must be valid JSON."
+    : error.type === "entity.too.large"
+      ? "Request body is too large."
+      : "Something went wrong. Please try again.";
+  return response.status(status).json({ message });
 });
 
 async function startServer() {
@@ -109,12 +171,20 @@ async function startServer() {
 
   try {
     users = JSON.parse(await readFile(usersFile, "utf8"));
+    if (!Array.isArray(users)) {
+      throw new Error("The auth data file must contain a JSON array.");
+    }
   } catch (error) {
     if (error.code !== "ENOENT") throw error;
   }
 
-  app.listen(port, "127.0.0.1", () => {
-    console.log(`TaskFlow auth API listening on http://127.0.0.1:${port}`);
+  if (isProduction) {
+    await readFile(join(buildDirectory, "index.html"));
+  }
+
+  app.listen(port, host, () => {
+    const displayHost = host === "0.0.0.0" ? "localhost" : host;
+    console.log(`TaskFlow server listening on http://${displayHost}:${port}`);
   });
 }
 
