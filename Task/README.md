@@ -1,6 +1,6 @@
 # TaskFlow
 
-TaskFlow is a React task planner with an Express API for account signup and login. Passwords are hashed with bcrypt, and the API issues seven-day JWTs. The browser stores the JWT in `localStorage` and checks it with the API when the app opens.
+TaskFlow is a React task planner with an Express API for account signup and login. Passwords are hashed with bcrypt, and the API keeps login sessions in secure, HTTP-only cookies for up to seven days.
 
 ## Run locally
 
@@ -20,4 +20,4 @@ npm run build
 npm start
 ```
 
-Set a strong `JWT_SECRET` environment variable and provide persistent storage for `server/data/users.json`. The server listens on `PORT` (default `3001`) and `0.0.0.0`, serves the built React app, and exposes `/api/health` for health checks. The JSON user store supports a single server instance; use a managed database before running multiple instances.
+Provide persistent storage for `server/data/users.json`. In production, session cookies are marked secure and require HTTPS. Sessions are held in server memory and expire after seven days; restarting the server signs users out. The server listens on `PORT` (default `3001`) and `0.0.0.0`, serves the built React app, and exposes `/api/health` for health checks. The JSON user store supports a single server instance; use a managed database and shared session storage before running multiple instances.

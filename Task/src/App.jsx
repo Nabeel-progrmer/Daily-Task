@@ -4,7 +4,6 @@ import "./App.css";
 
 const STORAGE_KEY = "taskflow_tasks_v1";
 const SETTINGS_KEY = "taskflow_settings_v1";
-const TOKEN_KEY = "taskflow_jwt";
 
 const categories = [
   { id: "work", name: "Work", icon: "💼" },
@@ -109,11 +108,7 @@ function getStartOfWeek(date = new Date()) {
 function App() {
   const [tasks, setTasks] = useState([]);
   const [settings, setSettings] = useState(getInitialSettings);
-  const [auth, setAuth] = useState(() =>
-    localStorage.getItem(TOKEN_KEY)
-      ? { status: "checking", user: null }
-      : { status: "signed-out", user: null }
-  );
+  const [auth, setAuth] = useState({ status: "checking", user: null });
 
   const [activeView, setActiveView] = useState("today");
   const [activeFilter, setActiveFilter] = useState("all");
@@ -139,20 +134,16 @@ function App() {
   }, [tasks, auth]);
 
   useEffect(() => {
-    const token = localStorage.getItem(TOKEN_KEY);
-    if (!token) return;
-
     let cancelled = false;
 
     async function restoreSession() {
       try {
         const response = await fetch("/api/auth/me", {
-          headers: { Authorization: `Bearer ${token}` },
+          credentials: "same-origin",
         });
         const result = await response.json();
 
         if (!response.ok || !result.user?.id) {
-          if (response.status === 401) localStorage.removeItem(TOKEN_KEY);
           throw new Error("Session expired.");
         }
 
@@ -163,6 +154,8 @@ function App() {
         if (cancelled) return;
         setTasks([]);
         setAuth({ status: "signed-out", user: null });
+      } finally {
+        localStorage.removeItem("taskflow_jwt");
       }
     }
 
@@ -522,18 +515,17 @@ function App() {
     }));
   };
 
-  const completeAuthentication = ({ token, user }) => {
-    if (!token || !user?.id) {
+  const completeAuthentication = ({ user }) => {
+    if (!user?.id) {
       throw new Error("The server returned an invalid authentication response.");
     }
 
-    localStorage.setItem(TOKEN_KEY, token);
     setTasks(getInitialTasks(getTaskStorageKey(user.id)));
     setAuth({ status: "signed-in", user });
   };
 
-  const signOut = () => {
-    localStorage.removeItem(TOKEN_KEY);
+  const signOut = async () => {
+    await fetch("/api/auth/logout", { method: "POST" }).catch(() => undefined);
     setTasks([]);
     setAuth({ status: "signed-out", user: null });
   };

@@ -120,6 +120,7 @@ export default function Auth({ onAuthenticated }) {
               value={email}
               onChange={(event) => setEmail(event.target.value)}
               placeholder="you@example.com"
+              maxLength={254}
               required
             />
           </label>
@@ -130,8 +131,9 @@ export default function Auth({ onAuthenticated }) {
               autoComplete={isSignup ? "new-password" : "current-password"}
               value={password}
               onChange={(event) => setPassword(event.target.value)}
-              placeholder={isSignup ? "At least 8 characters" : "Your password"}
-              minLength={isSignup ? 8 : undefined}
+              placeholder="8 to 128 characters"
+              minLength={8}
+              maxLength={128}
               required
             />
           </label>

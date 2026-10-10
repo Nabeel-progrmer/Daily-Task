@@ -4,21 +4,18 @@ import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
-import jwt from "jsonwebtoken";
-import { randomUUID } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 
 const app = express();
 const port = Number(process.env.PORT) || 3001;
 const host = process.env.HOST || "0.0.0.0";
 const usersFile = process.env.AUTH_DATA_FILE || join(dirname(fileURLToPath(import.meta.url)), "data", "users.json");
-const jwtSecret = process.env.JWT_SECRET || "taskflow-local-development-secret-change-before-deploy";
 const projectDirectory = dirname(dirname(fileURLToPath(import.meta.url)));
 const buildDirectory = join(projectDirectory, "dist");
 const isProduction = process.env.NODE_ENV === "production";
-
-if (process.env.NODE_ENV === "production" && !process.env.JWT_SECRET) {
-  throw new Error("JWT_SECRET must be set in production.");
-}
+const sessionCookie = "taskflow_session";
+const sessionDuration = 7 * 24 * 60 * 60 * 1000;
+const emailPattern = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 app.use(express.json({ limit: "10kb" }));
 
@@ -28,14 +25,40 @@ if (isProduction) {
 
 let users = [];
 let signupQueue = Promise.resolve();
+const sessions = new Map();
 
 function publicUser(user) {
   return { id: user.id, name: user.name, email: user.email };
 }
 
 function createSession(user, response, status = 200) {
-  const token = jwt.sign({ sub: user.id }, jwtSecret, { expiresIn: "7d" });
-  response.status(status).json({ token, user: publicUser(user) });
+  const sessionId = randomBytes(32).toString("hex");
+  sessions.set(sessionId, { userId: user.id, expiresAt: Date.now() + sessionDuration });
+  response.cookie(sessionCookie, sessionId, {
+    httpOnly: true,
+    sameSite: "lax",
+    secure: isProduction,
+    path: "/",
+    maxAge: sessionDuration,
+  });
+  response.status(status).json({ user: publicUser(user) });
+}
+
+function getSessionUser(request) {
+  const sessionId = (request.get("cookie") || "")
+    .split(";")
+    .map((cookie) => cookie.trim())
+    .find((cookie) => cookie.startsWith(`${sessionCookie}=`))
+    ?.slice(sessionCookie.length + 1);
+  const session = sessionId && sessions.get(sessionId);
+
+  if (!session) return null;
+  if (session.expiresAt <= Date.now()) {
+    sessions.delete(sessionId);
+    return null;
+  }
+
+  return users.find((user) => user.id === session.userId) || null;
 }
 
 function addUser(user) {
@@ -79,7 +102,7 @@ app.post("/api/auth/signup", async (request, response, next) => {
     if (name.length < 1 || name.length > 80) {
       return response.status(400).json({ message: "Enter a name up to 80 characters." });
     }
-    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+    if (email.length > 254 || !emailPattern.test(email)) {
       return response.status(400).json({ message: "Enter a valid email address." });
     }
     if (password.length < 8 || password.length > 128) {
@@ -106,6 +129,13 @@ app.post("/api/auth/login", async (request, response, next) => {
   try {
     const email = String(request.body?.email || "").trim().toLowerCase();
     const password = String(request.body?.password || "");
+    if (email.length > 254 || !emailPattern.test(email)) {
+      return response.status(400).json({ message: "Enter a valid email address." });
+    }
+    if (password.length < 8 || password.length > 128) {
+      return response.status(400).json({ message: "Password must be 8 to 128 characters." });
+    }
+
     const user = users.find((item) => item.email === email);
 
     if (!user || !(await bcrypt.compare(password, user.passwordHash))) {
@@ -119,23 +149,20 @@ app.post("/api/auth/login", async (request, response, next) => {
 });
 
 app.get("/api/auth/me", (request, response) => {
-  const authorization = request.get("authorization") || "";
-  const token = authorization.startsWith("Bearer ")
-    ? authorization.slice("Bearer ".length)
-    : "";
+  const user = getSessionUser(request);
+  if (!user) return response.status(401).json({ message: "Session is invalid or expired." });
+  return response.json({ user: publicUser(user) });
+});
 
-  try {
-    const payload = jwt.verify(token, jwtSecret);
-    const user = users.find((item) => item.id === payload.sub);
-
-    if (!user) {
-      return response.status(401).json({ message: "Session is no longer valid." });
-    }
-
-    return response.json({ user: publicUser(user) });
-  } catch {
-    return response.status(401).json({ message: "Session is invalid or expired." });
-  }
+app.post("/api/auth/logout", (request, response) => {
+  const sessionId = (request.get("cookie") || "")
+    .split(";")
+    .map((cookie) => cookie.trim())
+    .find((cookie) => cookie.startsWith(`${sessionCookie}=`))
+    ?.slice(sessionCookie.length + 1);
+  if (sessionId) sessions.delete(sessionId);
+  response.clearCookie(sessionCookie, { httpOnly: true, sameSite: "lax", secure: isProduction, path: "/" });
+  return response.json({ message: "Signed out." });
 });
 
 app.use("/api", (request, response) => {
